@@ -545,6 +545,23 @@ The `forge` command resolves to the globally installed package, not the local so
 npm install -g .
 ```
 
+## Contributing
+
+Contributions are welcome! Forge is an open source project and outside pull
+requests are encouraged.
+
+The short version:
+
+1. **Fork** the repo and clone your fork.
+2. Create a branch, make your change, and add or update tests where it makes sense.
+3. Run `npm test` and make sure it passes.
+4. Push to your fork and open a **pull request** against `main`.
+
+CI runs across macOS, Linux, and Windows on every PR, and a maintainer reviews
+before merging. See [CONTRIBUTING.md](./CONTRIBUTING.md) for the full guide,
+including dev setup and what to expect from the review process. Bug reports and
+feature requests are welcome via [issues](https://github.com/BrutalSystems/forge/issues).
+
 ## License
 
-MIT
+[MIT](./LICENSE)
