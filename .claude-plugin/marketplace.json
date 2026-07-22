@@ -1,0 +1,11 @@
+{
+  "name": "forge",
+  "owner": { "name": "Springthrough" },
+  "plugins": [
+    {
+      "name": "forge-dev",
+      "source": "./claude-plugin",
+      "description": "Set up, diagnose, and operate forge-orchestrated multi-repo dev stacks on macOS, Linux, and Windows"
+    }
+  ]
+}

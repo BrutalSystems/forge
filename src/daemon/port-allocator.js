@@ -33,6 +33,16 @@ function createPortAllocator() {
       );
     },
 
+    // Pin a port for a process unconditionally, without a TCP availability
+    // check. Used to re-record the port a process is ALREADY running on: that
+    // port reads as "in use" (the process is listening on it), so reserve()
+    // and revalidate() would wrongly skip it and move the record to a free
+    // candidate — silently orphaning the live process. See the sync route.
+    keep(project, process, port) {
+      reserved.set(`${project}:${process}`, port);
+      return port;
+    },
+
     release(project, process) {
       reserved.delete(`${project}:${process}`);
     },

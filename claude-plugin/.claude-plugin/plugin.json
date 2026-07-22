@@ -1,0 +1,7 @@
+{
+  "name": "forge-dev",
+  "displayName": "Forge Dev Stack",
+  "version": "0.1.0",
+  "description": "Skills for setting up, diagnosing, and operating forge-orchestrated multi-repo dev stacks",
+  "author": { "name": "Springthrough" }
+}

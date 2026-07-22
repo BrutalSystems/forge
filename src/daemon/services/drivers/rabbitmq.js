@@ -1,4 +1,5 @@
-const { ensureContainerRunning, stopContainer, checkTcpHealth, execInContainer } = require('../docker');
+const { ensureContainerRunning, isContainerRunning, stopContainer, checkTcpHealth, execInContainer } = require('../docker');
+const { retryProvision } = require('./retry');
 
 const NAME = 'rabbitmq';
 const CONTAINER_NAME = 'forge-rabbitmq';
@@ -20,21 +21,37 @@ function createRabbitmqDriver({ name = NAME, containerName = CONTAINER_NAME, por
     port,
 
     async start() {
-      await ensureContainerRunning({ image: IMAGE, name: containerName, port });
+      await ensureContainerRunning({
+        image: IMAGE,
+        name: containerName,
+        port,
+        containerPort: PORT, // the broker always listens on 5672 inside the container
+      });
     },
 
     async healthCheck() {
-      return checkTcpHealth('127.0.0.1', port);
+      // Container identity + TCP: a foreign process on this port must not read as healthy.
+      return (await isContainerRunning(containerName)) && checkTcpHealth('127.0.0.1', port);
     },
 
     async provision(projectName, cfg) {
       if (vhosts.has(projectName)) return;
       const vhost = cfg?.vhost || sanitizeVhost(projectName);
-      // add_vhost exits non-zero if the vhost already exists — execInContainer ignores exit codes.
-      await execInContainer(containerName, ['rabbitmqctl', 'add_vhost', vhost]);
-      await execInContainer(containerName, [
-        'rabbitmqctl', 'set_permissions', '-p', vhost, 'guest', '.*', '.*', '.*',
-      ]);
+      // TCP-ready ≠ broker booted (Docker's port proxy answers first), and
+      // rabbitmqctl against a booting broker fails — so retry until the vhost
+      // verifiably exists. add_vhost exits non-zero if it already exists,
+      // which counts as success; list_vhosts is the source of truth.
+      await retryProvision(`rabbitmq vhost "${vhost}"`, async () => {
+        await execInContainer(containerName, ['rabbitmqctl', 'add_vhost', vhost]);
+        const { exitCode, output } = await execInContainer(containerName, ['rabbitmqctl', 'list_vhosts']);
+        return exitCode === 0 && output.split(/\r?\n/).some(line => line.trim() === vhost);
+      });
+      await retryProvision(`rabbitmq permissions on "${vhost}"`, async () => {
+        const { exitCode } = await execInContainer(containerName, [
+          'rabbitmqctl', 'set_permissions', '-p', vhost, 'guest', '.*', '.*', '.*',
+        ]);
+        return exitCode === 0;
+      });
       vhosts.set(projectName, vhost);
     },
 

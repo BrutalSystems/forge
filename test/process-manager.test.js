@@ -748,3 +748,61 @@ describe('getDefaultShell — win32 branch', () => {
     expect(getDefaultShell('win32')).toBe('cmd.exe');
   });
 });
+
+describe('expandCommandVars', () => {
+  const { expandCommandVars } = require('../src/daemon/process-manager');
+
+  test('expands ${VAR}, $VAR, and %VAR% forms from the env map', () => {
+    const env = { PORT: '3020', API_PORT: 8300 };
+    expect(expandCommandVars('serve --port ${PORT}', env)).toBe('serve --port 3020');
+    expect(expandCommandVars('serve --port $PORT', env)).toBe('serve --port 3020');
+    expect(expandCommandVars('serve --port %PORT%', env)).toBe('serve --port 3020');
+    expect(expandCommandVars('proxy $API_PORT', env)).toBe('proxy 8300');
+  });
+
+  test('leaves unknown vars untouched for the shell', () => {
+    expect(expandCommandVars('echo $HOME_UNSET_XYZ ${ALSO_UNSET} %NOPE%', {}))
+      .toBe('echo $HOME_UNSET_XYZ ${ALSO_UNSET} %NOPE%');
+  });
+
+  test('does not mangle subshells, ${VAR:-default}, or lone % signs', () => {
+    const env = { PORT: '3020' };
+    expect(expandCommandVars('echo $(date) ${PORT:-9999} 100%', env))
+      .toBe('echo $(date) ${PORT:-9999} 100%');
+  });
+
+  test('longest-name match: $PORT does not clobber $PORT_EXTRA', () => {
+    const env = { PORT: '3020', PORT_EXTRA: '9' };
+    expect(expandCommandVars('run $PORT_EXTRA then $PORT', env)).toBe('run 9 then 3020');
+  });
+
+  test('startOne spawns the command with vars already expanded', async () => {
+    const calls = [];
+    const mgr = createProcessManager({
+      ptySpawn: (command, env, cwd) => { calls.push(command); return makeMockPty(); },
+    });
+    const configs = [{ name: 'app', command: 'vite --port $PORT', cwd: '.', ports: [3020], portEnv: 'PORT' }];
+    await mgr.up('proj', configs, { ports: { app: 3020 }, services: {} }, '/projects/proj');
+    expect(calls).toEqual(['vite --port 3020']);
+  });
+
+  test('startOne does NOT textually expand process.env vars — the shell handles those', async () => {
+    // Narrowed scope: only forge-injected vars are substituted here. Ambient
+    // vars like $HOME are left for the shell to expand against the child's env
+    // (process.env is merged in at spawn), so a value containing shell
+    // metacharacters can't be re-parsed by pre-substitution.
+    const calls = [];
+    const prevHome = process.env.HOME;
+    process.env.HOME = '/tmp/should; not-expand';
+    try {
+      const mgr = createProcessManager({
+        ptySpawn: (command) => { calls.push(command); return makeMockPty(); },
+      });
+      const configs = [{ name: 'app', command: 'run $HOME --port $PORT', cwd: '.', ports: [3020], portEnv: 'PORT' }];
+      await mgr.up('proj', configs, { ports: { app: 3020 }, services: {} }, '/projects/proj');
+      expect(calls).toEqual(['run $HOME --port 3020']);
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME; else process.env.HOME = prevHome;
+    }
+  });
+});

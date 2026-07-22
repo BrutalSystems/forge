@@ -1,4 +1,5 @@
 const request = require('supertest');
+const net = require('net');
 const os = require('os');
 const fs = require('fs');
 const path = require('path');
@@ -116,6 +117,38 @@ test('POST /api/projects/:name/sync re-allocates ports for updated config', asyn
   expect(res.status).toBe(200);
   expect(typeof res.body.allocations.ports.worker).toBe('number');
   cleanup();
+});
+
+// Regression: a running process that fell back to a later candidate (because
+// its first candidate was busy at launch) must NOT be moved back to the first
+// candidate when it frees up and a sync runs — the live process keeps that
+// port, so its registry record must too. Previously sync did releaseAll +
+// blind reserve and reset it, leaving `forge status` reporting a dead port.
+test('POST /api/projects/:name/sync keeps a running process on its fallback port', async () => {
+  const p = path.join(os.tmpdir(), `forge-api-test-${Date.now()}-keep.json`);
+  const registry = createRegistry(p);
+  const portAllocator = createPortAllocator();
+  const serviceManager = createServiceManager([]);
+  // Fake process manager: 'api' is running, everything else is not.
+  const processManager = { isRunning: (_proj, proc) => proc === 'api' };
+  const { app } = createServer({ registry, portAllocator, serviceManager, processManager });
+
+  // Occupy the first candidate so registration falls back to the second.
+  const blocker = net.createServer();
+  await new Promise((r) => blocker.listen(candidatePorts[0], '127.0.0.1', r));
+
+  const reg = await request(app).post('/api/projects/register').send(makeConfig());
+  expect(reg.body.allocations.ports.api).toBe(candidatePorts[1]); // fell back
+
+  // First candidate frees up.
+  await new Promise((r) => blocker.close(r));
+
+  // Sync while 'api' is still running — it must stay on the fallback port.
+  const res = await request(app).post('/api/projects/sai/sync').send(makeConfig());
+  expect(res.status).toBe(200);
+  expect(res.body.allocations.ports.api).toBe(candidatePorts[1]);
+
+  fs.existsSync(p) && fs.unlinkSync(p);
 });
 
 test('POST /api/projects/register stores empty services allocations', async () => {

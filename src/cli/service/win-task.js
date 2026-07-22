@@ -44,7 +44,8 @@ function generateTaskXml(wrapperCmdPath, forgeDir) {
     <Enabled>true</Enabled>
     <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
     <RestartOnFailure>
-      <Interval>PT2S</Interval>
+      <!-- Task Scheduler rejects intervals under one minute (PT1M–P31D) -->
+      <Interval>PT1M</Interval>
       <Count>999</Count>
     </RestartOnFailure>
   </Settings>
@@ -78,13 +79,32 @@ function install() {
   fs.writeFileSync(wrapperPath, generateWrapperCmd(process.execPath, daemonScript, forgeDir));
 
   const xmlPath = taskXmlPath();
-  fs.writeFileSync(xmlPath, generateTaskXml(wrapperPath, forgeDir));
+  // schtasks /XML on some locales refuses UTF-8 task XML ("unable to switch the
+  // encoding") — write UTF-16LE with BOM, the format schtasks itself exports.
+  const xml = generateTaskXml(wrapperPath, forgeDir).replace('encoding="UTF-8"', 'encoding="UTF-16"');
+  fs.writeFileSync(xmlPath, '\ufeff' + xml, 'utf16le');
 
   // /F overwrites if the task already exists — satisfies idempotency.
   // stdio captures stderr so a schtasks failure throws with the actual error text.
-  execFileSync('schtasks.exe', [
-    '/Create', '/XML', xmlPath, '/TN', TASK_NAME, '/F',
-  ], { stdio: ['ignore', 'ignore', 'pipe'] });
+  try {
+    execFileSync('schtasks.exe', [
+      '/Create', '/XML', xmlPath, '/TN', TASK_NAME, '/F',
+    ], { stdio: ['ignore', 'ignore', 'pipe'] });
+  } catch (err) {
+    // Some machines (group policy, restricted accounts) deny task creation to
+    // non-elevated users. Turn the raw stack trace into an actionable message.
+    const stderr = String(err.stderr ?? '');
+    if (err.status === 5 || /access is denied|0x80070005/i.test(stderr)) {
+      throw new Error(
+        'Registering the logon task was denied — this machine requires elevation.\n' +
+        'Run this once from an Administrator PowerShell, then the daemon starts at every logon:\n\n' +
+        `  schtasks /Create /XML "${xmlPath}" /TN ${TASK_NAME} /F\n` +
+        `  schtasks /Run /TN ${TASK_NAME}\n\n` +
+        `Until then, start the daemon manually:\n  node "${daemonScript}"`,
+      );
+    }
+    throw err;
+  }
 
   execFileSync('schtasks.exe', [
     '/Run', '/TN', TASK_NAME,

@@ -1,4 +1,5 @@
-const { ensureContainerRunning, stopContainer, checkTcpHealth, execInContainer } = require('../docker');
+const { ensureContainerRunning, isContainerRunning, stopContainer, checkTcpHealth, execInContainer } = require('../docker');
+const { retryProvision } = require('./retry');
 
 const NAME = 'postgres';
 const CONTAINER_NAME = 'forge-postgres';
@@ -25,21 +26,27 @@ function createPostgresDriver({ name = NAME, containerName = CONTAINER_NAME, por
         image: IMAGE,
         name: containerName,
         port,
+        containerPort: PORT, // postgres always listens on 5432 inside the container
         env: [`POSTGRES_PASSWORD=${PASSWORD}`],
       });
     },
 
     async healthCheck() {
-      return checkTcpHealth('127.0.0.1', port);
+      // Container identity + TCP: a foreign process on this port must not read as healthy.
+      return (await isContainerRunning(containerName)) && checkTcpHealth('127.0.0.1', port);
     },
 
     async provision(projectName, cfg) {
       if (dbNames.has(projectName)) return;
       const db = cfg?.db || sanitizeDbName(projectName);
-      // CREATE DATABASE is not transactional; ignore error if already exists.
-      await execInContainer(containerName, [
-        'psql', '-U', USER, '-c', `CREATE DATABASE "${db}"`,
-      ]);
+      // Retried with exit-code checks: TCP-ready ≠ booted, and a silent
+      // failure here means the project runs against a database that doesn't exist.
+      await retryProvision(`postgres database "${db}"`, async () => {
+        const { exitCode, output } = await execInContainer(containerName, [
+          'psql', '-U', USER, '-c', `CREATE DATABASE "${db}"`,
+        ]);
+        return exitCode === 0 || /already exists/i.test(output);
+      });
       dbNames.set(projectName, db);
     },
 

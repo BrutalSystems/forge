@@ -1,4 +1,4 @@
-const { ensureContainerRunning, stopContainer, checkTcpHealth } = require('../docker');
+const { ensureContainerRunning, isContainerRunning, stopContainer, checkTcpHealth } = require('../docker');
 
 const NAME = 'redis';
 const CONTAINER_NAME = 'forge-redis';
@@ -28,13 +28,15 @@ function createRedisDriver({ name = NAME, containerName = CONTAINER_NAME, port =
         image: IMAGE,
         name: containerName,
         port,
+        containerPort: PORT, // redis-server always listens on 6379 inside the container
         // Override default of 16 databases to support up to 63 projects
         cmd: ['redis-server', '--databases', '64'],
       });
     },
 
     async healthCheck() {
-      return checkTcpHealth('127.0.0.1', port);
+      // Container identity + TCP: a foreign process on this port must not read as healthy.
+      return (await isContainerRunning(containerName)) && checkTcpHealth('127.0.0.1', port);
     },
 
     async provision(projectName, _cfg) {

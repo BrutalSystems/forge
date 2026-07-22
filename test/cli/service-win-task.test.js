@@ -8,7 +8,8 @@ describe('winTask.generateTaskXml', () => {
     );
     expect(xml).toMatch(/^<\?xml version="1\.0" encoding="UTF-8"\?>/);
     expect(xml).toContain('<LogonTrigger>');
-    expect(xml).toContain('<Interval>PT2S</Interval>');
+    // Task Scheduler rejects RestartOnFailure intervals under one minute (PT1M–P31D).
+    expect(xml).toContain('<Interval>PT1M</Interval>');
     expect(xml).toContain('<RunLevel>LeastPrivilege</RunLevel>');
     expect(xml).toContain('<Command>C:\\Users\\me\\AppData\\Local\\Forge\\forge-daemon.cmd</Command>');
     expect(xml).toContain('<WorkingDirectory>C:\\Users\\me\\.forge</WorkingDirectory>');
@@ -63,9 +64,13 @@ describe('winTask.install', () => {
     const cfgDir = path.join(localAppData, 'Forge');
     expect(fs.existsSync(path.join(cfgDir, 'forge-task.xml'))).toBe(true);
     expect(fs.existsSync(path.join(cfgDir, 'forge-daemon.cmd'))).toBe(true);
-    // XML references the wrapper by absolute path.
-    expect(fs.readFileSync(path.join(cfgDir, 'forge-task.xml'), 'utf8'))
-      .toContain(path.join(cfgDir, 'forge-daemon.cmd'));
+    // XML is written as UTF-16LE with BOM — schtasks /XML rejects UTF-8 on
+    // some locales ("unable to switch the encoding") — and must both declare
+    // UTF-16 and reference the wrapper by absolute path.
+    const xmlOnDisk = fs.readFileSync(path.join(cfgDir, 'forge-task.xml'), 'utf16le');
+    expect(xmlOnDisk.charCodeAt(0)).toBe(0xfeff);
+    expect(xmlOnDisk).toContain('encoding="UTF-16"');
+    expect(xmlOnDisk).toContain(path.join(cfgDir, 'forge-daemon.cmd'));
     // Wrapper redirects to ~/.forge/daemon.log.
     expect(fs.readFileSync(path.join(cfgDir, 'forge-daemon.cmd'), 'utf8'))
       .toMatch(/> ".*[\\\/]\.forge[\\\/]daemon\.log"/);

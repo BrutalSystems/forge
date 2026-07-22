@@ -3,7 +3,12 @@ const net = require('net');
 
 const docker = new Docker();
 
-async function ensureContainerRunning({ image, name, port, cmd, env = [], volumes = [] }) {
+// containerPort is the port the service listens on INSIDE the container
+// (defaults to the host port for backward compatibility). Drivers with a
+// fixed internal port (redis 6379, postgres 5432, rabbitmq 5672) pass it so
+// custom host ports map correctly instead of binding a container port
+// nothing listens on.
+async function ensureContainerRunning({ image, name, port, containerPort = port, cmd, env = [], volumes = [] }) {
   const containers = await docker.listContainers({ all: true });
   const existing = containers.find(c => c.Names.includes(`/${name}`));
 
@@ -25,9 +30,9 @@ async function ensureContainerRunning({ image, name, port, cmd, env = [], volume
     Image: image,
     name,
     Cmd: cmd,
-    ExposedPorts: { [`${port}/tcp`]: {} },
+    ExposedPorts: { [`${containerPort}/tcp`]: {} },
     HostConfig: {
-      PortBindings: { [`${port}/tcp`]: [{ HostPort: String(port) }] },
+      PortBindings: { [`${containerPort}/tcp`]: [{ HostPort: String(port) }] },
       RestartPolicy: { Name: 'unless-stopped' },
       ...(volumes.length > 0 ? { Binds: volumes } : {}),
     },
@@ -48,6 +53,14 @@ function checkTcpHealth(host, port) {
   });
 }
 
+// True if a container with this exact name is currently running. Used by
+// driver health checks so a foreign process squatting on the service's port
+// doesn't read as "healthy" — a bare TCP probe can't tell the difference.
+async function isContainerRunning(name) {
+  const containers = await docker.listContainers();
+  return containers.some(c => c.Names.includes(`/${name}`));
+}
+
 async function stopContainer(name) {
   const containers = await docker.listContainers({ all: true });
   const existing = containers.find(c => c.Names.includes(`/${name}`));
@@ -55,22 +68,30 @@ async function stopContainer(name) {
   await docker.getContainer(existing.Id).stop();
 }
 
-// Exec a command inside a running container. Exit code is not checked — callers
-// that need idempotent provisioning (e.g. "create if not exists") can ignore failures.
+// Exec a command inside a running container. Returns { exitCode, output } so
+// callers can verify success — a TCP-ready container is not necessarily a
+// booted service (Docker's port proxy accepts connections before e.g. the
+// RabbitMQ broker is up), so provisioning commands MUST check exit codes.
+// Callers doing idempotent provisioning ("create if not exists") can still
+// ignore specific failures, but explicitly. Output is the raw multiplexed
+// stream (contains 8-byte frame headers) — fine for substring matching.
 async function execInContainer(containerName, cmd) {
   const containers = await docker.listContainers();
   const existing = containers.find(c => c.Names.includes(`/${containerName}`));
   if (!existing) throw new Error(`Container "${containerName}" is not running`);
   const container = docker.getContainer(existing.Id);
   const exec = await container.exec({ Cmd: cmd, AttachStdout: true, AttachStderr: true });
+  let output = '';
   await new Promise((resolve, reject) => {
     exec.start({}, (err, stream) => {
       if (err) return reject(err);
-      stream.resume();
+      stream.on('data', (chunk) => { output += chunk.toString('utf8'); });
       stream.on('end', resolve);
       stream.on('error', reject);
     });
   });
+  const info = await exec.inspect();
+  return { exitCode: info.ExitCode, output };
 }
 
-module.exports = { ensureContainerRunning, stopContainer, checkTcpHealth, execInContainer };
+module.exports = { ensureContainerRunning, isContainerRunning, stopContainer, checkTcpHealth, execInContainer };

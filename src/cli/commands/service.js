@@ -177,8 +177,11 @@ module.exports = function registerService(program) {
         // options like port/replicaSet are baked into the container at creation time.
         // A plain 'service down && up' restarts the *existing* container unchanged,
         // so it must be removed and the daemon restarted for the new options to apply.
+        // After the daemon comes back, `forge reload` re-provisions each project so
+        // .env.forge picks up the new connection string (e.g. ?replicaSet=rs0).
         console.log(chalk.dim(`  To apply: stop dependents, then 'forge service down ${type}',`));
         console.log(chalk.dim(`  'docker rm forge-${type}', and restart the forge daemon.`));
+        console.log(chalk.dim(`  Then run 'forge reload' in each project that uses ${type} to refresh .env.forge.`));
       }
     });
 };

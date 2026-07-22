@@ -22,7 +22,7 @@
     "build:web": "vite build --config web/vite.config.js",
     "dev:web": "vite --config web/vite.config.js",
     "postinstall": "node scripts/fix-node-pty-perms.js",
-    "prepare": "npm install --prefix web && npm run build:web"
+    "prepare": "node scripts/prepare-web.js"
   },
   "jest": {
     "testMatch": [

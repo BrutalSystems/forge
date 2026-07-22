@@ -1,4 +1,4 @@
-const { ensureContainerRunning, stopContainer, checkTcpHealth, execInContainer } = require('../docker');
+const { ensureContainerRunning, isContainerRunning, stopContainer, checkTcpHealth, execInContainer } = require('../docker');
 
 const DEFAULT_NAME = 'mongo';
 const DEFAULT_CONTAINER_NAME = 'forge-mongo';
@@ -6,7 +6,16 @@ const IMAGE = 'mongo:8.0.23';
 const DEFAULT_PORT = 27017;
 
 function createMongoDriver({ name = DEFAULT_NAME, containerName = DEFAULT_CONTAINER_NAME, port = DEFAULT_PORT, replicaSet = false } = {}) {
-  const cmd = replicaSet ? ['--replSet', 'rs0', '--bind_ip_all'] : undefined;
+  // Custom ports need mongod itself to listen on ${port}: the container maps
+  // port:port, and replica-set mode advertises 127.0.0.1:${port} as the member
+  // address — which must be reachable from inside the container too.
+  const cmd = (replicaSet || port !== DEFAULT_PORT)
+    ? [
+        ...(port !== DEFAULT_PORT ? ['--port', String(port)] : []),
+        ...(replicaSet ? ['--replSet', 'rs0'] : []),
+        '--bind_ip_all',
+      ]
+    : undefined;
 
   return {
     name,
@@ -19,25 +28,30 @@ function createMongoDriver({ name = DEFAULT_NAME, containerName = DEFAULT_CONTAI
     },
 
     async healthCheck() {
-      return checkTcpHealth('127.0.0.1', port);
+      // Container identity + TCP: a foreign mongod on this port must not
+      // read as healthy (it won't have our db/replica-set config).
+      return (await isContainerRunning(containerName)) && checkTcpHealth('127.0.0.1', port);
     },
 
     ...(replicaSet ? {
       async postStart() {
         // Retry loop: TCP health passes before mongod accepts RS commands.
         // Also idempotent — if the volume already has RS state, rs.status().ok === 1 and we skip.
+        let lastError = 'unknown';
         for (let i = 0; i < 10; i++) {
           await new Promise(r => setTimeout(r, 1000));
           try {
-            await execInContainer(containerName, [
-              'mongosh', '--quiet', '--eval',
+            const { exitCode, output } = await execInContainer(containerName, [
+              'mongosh', '--quiet', '--port', String(port), '--eval',
               `var s; try { s = rs.status(); } catch(e) { s = {ok:0}; } if (!s.ok) rs.initiate({_id:'rs0',members:[{_id:0,host:'127.0.0.1:${port}'}]});`,
             ]);
-            return;
-          } catch (_) {
-            // retry
+            if (exitCode === 0) return;
+            lastError = output.trim().slice(-200);
+          } catch (err) {
+            lastError = String(err.message ?? err);
           }
         }
+        throw new Error(`mongo replica set init failed on "${containerName}": ${lastError}`);
       },
     } : {}),
 

@@ -17,13 +17,25 @@ function validateServicesConfig(servicesConfig) {
     .map(([name]) => `Service "${name}" has no "env" key — forge won't inject its connection string into processes`);
 }
 
-function createProjectRoutes({ registry, portAllocator, serviceManager }) {
+function createProjectRoutes({ registry, portAllocator, serviceManager, processManager }) {
   const router = Router();
 
-  async function allocatePorts(config) {
+  // `keepPort(procName)` returns a port to pin unconditionally (a process
+  // already running on a known port), or null to reserve fresh from candidates.
+  async function allocatePorts(config, keepPort = null) {
     const ports = {};
-    for (const proc of config.processes ?? []) {
-      if (!proc.ports?.length) continue; // port-less process: nothing to reserve
+    const procs = (config.processes ?? []).filter((p) => p.ports?.length);
+    // Pass 1: pin ports for processes we must keep, so pass 2's reservations
+    // can't hand a kept port to a different process.
+    if (keepPort) {
+      for (const proc of procs) {
+        const port = keepPort(proc.name);
+        if (port != null) ports[proc.name] = portAllocator.keep(config.name, proc.name, port);
+      }
+    }
+    // Pass 2: reserve the remaining processes from their candidate lists.
+    for (const proc of procs) {
+      if (ports[proc.name] != null) continue;
       ports[proc.name] = await portAllocator.reserve(config.name, proc.name, proc.ports);
     }
     return ports;
@@ -86,8 +98,18 @@ function createProjectRoutes({ registry, portAllocator, serviceManager }) {
       // so a bad config doesn't leave the project without allocations. Acceptable now
       // while provision is cheap and recoverable; revisit before adding stateful drivers.
       await serviceManager.deprovision(req.params.name, project.config?.services ?? {});
+      // Preserve the ports of processes that are still running: they can't be
+      // moved without a restart, and re-reserving from scratch would reset a
+      // process on a fallback port back to its (now-free) first candidate —
+      // orphaning the live process and leaving `forge status` reporting a port
+      // nothing is listening on.
+      const prevPorts = project.allocations?.ports ?? {};
       portAllocator.releaseAll(req.params.name);
-      const ports = await allocatePorts({ ...req.body, name: req.params.name });
+      const ports = await allocatePorts({ ...req.body, name: req.params.name }, (procName) =>
+        processManager?.isRunning(req.params.name, procName) && prevPorts[procName] != null
+          ? prevPorts[procName]
+          : null,
+      );
       const services = await serviceManager.provision(req.params.name, req.body.services ?? {});
       const allocations = { ports, services };
       registry.update(req.params.name, { config: req.body, allocations });

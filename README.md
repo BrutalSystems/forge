@@ -271,7 +271,7 @@ forge starts the container with `--replSet rs0 --bind_ip_all` and runs `rs.initi
 | Field | Type | Description |
 |---|---|---|
 | `name` | string | Process name, unique within the project. |
-| `command` | string | Shell command to run. |
+| `command` | string | Shell command to run. `${VAR}`, `$VAR`, and `%VAR%` references to forge-injected env vars (e.g. `portEnv`, service URLs, `.env.forge` exports) are expanded by forge **before** the shell sees the command, so one config file works on macOS, Linux, and Windows. Unknown names are left for the shell. |
 | `cwd` | string | Working directory, relative to the project root. Defaults to `.`. |
 | `ports` | array | Candidate port numbers tried in order. Forge picks the first available at registration time. Omit or use `[]` for processes that don't bind a port. |
 | `portEnv` | string | Env var injected into **this process only** with its allocated port (e.g. `"PORT"`). Not written to `.env.forge`. |
@@ -488,6 +488,9 @@ Windows (cmd or PowerShell):
 ```cmd
 schtasks /Query /TN \Forge\ForgeDaemon
 ```
+
+**Windows: "Registering the logon task was denied"**
+Some machines require elevation to create scheduled tasks. Run the two `schtasks` commands printed in the error from an Administrator PowerShell — this is a one-time step; the daemon then starts at every logon.
 
 **node-pty build error**
 Xcode Command Line Tools are required. Run:
