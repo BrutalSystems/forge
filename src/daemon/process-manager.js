@@ -188,8 +188,14 @@ function createProcessManager({ ptySpawn, pollPort, pollHttp, waitForExit, envCo
 
     let ptyProc;
     try {
-      // Expand from the same env the child will see (forge-injected vars win).
-      ptyProc = spawnFn(expandCommandVars(proc.command, { ...process.env, ...env }), env, cwd);
+      // Expand ONLY forge-injected vars (service URLs, proc.env, portEnv,
+      // envFile) — controlled values that must work cross-shell (cmd.exe won't
+      // expand $PORT, POSIX won't expand %PORT%). Everything else ($HOME,
+      // $(subshell), ...) is left for the shell, which expands it against the
+      // child's full env (process.env is merged in at spawn, line ~117) the
+      // way it always did — crucially WITHOUT re-parsing metacharacters that a
+      // textual substitution here would wrongly wake up.
+      ptyProc = spawnFn(expandCommandVars(proc.command, env), env, cwd);
     } catch (err) {
       record.status = 'crashed';
       record.startedAt = null;

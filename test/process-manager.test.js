@@ -785,4 +785,24 @@ describe('expandCommandVars', () => {
     await mgr.up('proj', configs, { ports: { app: 3020 }, services: {} }, '/projects/proj');
     expect(calls).toEqual(['vite --port 3020']);
   });
+
+  test('startOne does NOT textually expand process.env vars — the shell handles those', async () => {
+    // Narrowed scope: only forge-injected vars are substituted here. Ambient
+    // vars like $HOME are left for the shell to expand against the child's env
+    // (process.env is merged in at spawn), so a value containing shell
+    // metacharacters can't be re-parsed by pre-substitution.
+    const calls = [];
+    const prevHome = process.env.HOME;
+    process.env.HOME = '/tmp/should; not-expand';
+    try {
+      const mgr = createProcessManager({
+        ptySpawn: (command) => { calls.push(command); return makeMockPty(); },
+      });
+      const configs = [{ name: 'app', command: 'run $HOME --port $PORT', cwd: '.', ports: [3020], portEnv: 'PORT' }];
+      await mgr.up('proj', configs, { ports: { app: 3020 }, services: {} }, '/projects/proj');
+      expect(calls).toEqual(['run $HOME --port 3020']);
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME; else process.env.HOME = prevHome;
+    }
+  });
 });
