@@ -3,6 +3,15 @@ const { ensureContainerRunning, isContainerRunning, stopContainer, checkTcpHealt
 const DEFAULT_NAME = 'mongo';
 const DEFAULT_CONTAINER_NAME = 'forge-mongo';
 const IMAGE = 'mongo:8.0.23';
+
+// Linux kernels 6.19 through 7.0.13 broke the rseq ABI that the tcmalloc
+// vendored into mongod 8.x relies on, so mongod refuses to start (SERVER-121912).
+// Docker Desktop's VM kernel crossed into that range, which takes out every
+// mongo 8.x tag — there is no fixed image to bump to. Letting glibc own the rseq
+// registration keeps tcmalloc off the broken path, and mongod then starts
+// normally. Costs some allocator performance; fine for local dev.
+// Remove once the VM kernel reaches 7.0.14+, where the kernel-side fix landed.
+const ENV = ['GLIBC_TUNABLES=glibc.pthread.rseq=1'];
 const DEFAULT_PORT = 27017;
 
 function createMongoDriver({ name = DEFAULT_NAME, containerName = DEFAULT_CONTAINER_NAME, port = DEFAULT_PORT, replicaSet = false } = {}) {
@@ -24,7 +33,7 @@ function createMongoDriver({ name = DEFAULT_NAME, containerName = DEFAULT_CONTAI
     port,
 
     async start() {
-      await ensureContainerRunning({ image: IMAGE, name: containerName, port, cmd, volumes: [`${containerName}-data:/data/db`] });
+      await ensureContainerRunning({ image: IMAGE, name: containerName, port, cmd, env: ENV, volumes: [`${containerName}-data:/data/db`] });
     },
 
     async healthCheck() {
